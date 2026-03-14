@@ -13,6 +13,7 @@
 import { BodyModel } from './components/body-model.js';
 import { Scene }     from './components/scene.js';
 import { PoseSystem } from './observatory/js/pose-system.js';
+import { login, handleCallback, getToken, logout, fetchCatalog } from './vroid-hub.js';
 
 // ═══════════════════════════════════════════════════════════════════
 // KeypointAdapter
@@ -818,6 +819,86 @@ class Skeleton3DApp {
 
 // ── エントリーポイント ──────────────────────────────────────────────
 
-window.addEventListener('DOMContentLoaded', () => {
-  new Skeleton3DApp().init();
+// ── VRoid Hub UI ─────────────────────────────────────────────────────────────
+
+function initVroidHub(app) {
+  const modal     = document.getElementById('vroid-modal');
+  const grid      = document.getElementById('vroid-grid');
+  const status    = document.getElementById('vroid-status');
+  const loginBtn  = document.getElementById('vroid-login-btn');
+  const logoutBtn = document.getElementById('vroid-logout-btn');
+  const openBtn   = document.getElementById('btn-vroid-hub');
+  const closeBtn  = document.getElementById('vroid-close');
+
+  const updateAuthUI = () => {
+    const has = !!getToken();
+    loginBtn.style.display  = has ? 'none' : '';
+    logoutBtn.style.display = has ? '' : 'none';
+  };
+
+  const loadCatalog = async () => {
+    if (!getToken()) { status.textContent = 'ログインしてください'; return; }
+    status.textContent = 'カタログ取得中...';
+    grid.innerHTML = '';
+    try {
+      const models = await fetchCatalog();
+      status.textContent = `${models.length} 件`;
+      for (const m of models) {
+        const card = document.createElement('div');
+        card.style.cssText = 'cursor:pointer; border:1px solid rgba(0,200,255,0.2); border-radius:6px; overflow:hidden; background:#0a1020;';
+        card.innerHTML = `
+          <img src="${m.imageUrl}" style="width:100%; aspect-ratio:1; object-fit:cover; display:block;" onerror="this.style.display='none'">
+          <div style="padding:6px 8px; font-size:10px; color:#aaddff; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${m.name}</div>
+        `;
+        card.addEventListener('click', async () => {
+          if (!m.downloadUrl) { status.textContent = '⚠ ダウンロードURLなし（非公開モデル）'; return; }
+          modal.style.display = 'none';
+          status.textContent = '';
+          // VrmDriver で読み込む（ファイル選択と同じフロー）
+          const btn = document.getElementById('btn-vrm-toggle');
+          btn.textContent = 'Loading...';
+          btn.disabled = true;
+          try {
+            if (app._vrmDriver) { app._vrmDriver.dispose(); app._vrmDriver = null; }
+            app._wireframeDriver.dispose();
+            app._vrmDriver = await VrmDriver.create(app._scene3d.scene, m.downloadUrl, app._adapter);
+            app._driver = app._vrmDriver;
+            btn.textContent = '⬛ Wireframe';
+            btn.classList.add('active');
+          } catch (e) {
+            console.error('VRM load:', e);
+            btn.textContent = 'Load failed';
+          } finally {
+            btn.disabled = false;
+          }
+        });
+        grid.appendChild(card);
+      }
+    } catch (e) {
+      status.textContent = `エラー: ${e.message}`;
+    }
+  };
+
+  openBtn.addEventListener('click', () => {
+    modal.style.display = 'block';
+    updateAuthUI();
+    if (getToken()) loadCatalog();
+  });
+  closeBtn.addEventListener('click', () => { modal.style.display = 'none'; });
+  loginBtn.addEventListener('click', () => login());
+  logoutBtn.addEventListener('click', () => { logout(); updateAuthUI(); grid.innerHTML = ''; status.textContent = ''; });
+}
+
+// ── エントリーポイント ──────────────────────────────────────────────
+
+window.addEventListener('DOMContentLoaded', async () => {
+  // VRoid Hub OAuth コールバック処理（?code= が URL にある場合）
+  if (location.search.includes('code=')) {
+    const ok = await handleCallback();
+    if (ok) console.log('VRoid Hub: ログイン成功');
+  }
+
+  const app = new Skeleton3DApp();
+  app.init();
+  initVroidHub(app);
 });

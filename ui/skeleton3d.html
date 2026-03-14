@@ -243,6 +243,22 @@
     <a href="observatory.html">Observatory</a>
   </div>
 
+  <!-- VRoid Hub catalog modal -->
+  <div id="vroid-modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.85); z-index:50; overflow-y:auto;">
+    <div style="max-width:640px; margin:40px auto; padding:20px; background:#0d1a2e; border:1px solid rgba(0,200,255,0.2); border-radius:8px;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+        <span style="color:#00ccff; font-size:14px; letter-spacing:.1em;">VRoid Hub — アバターカタログ</span>
+        <button id="vroid-close" style="background:none; border:none; color:#aaddff; cursor:pointer; font-size:16px;">✕</button>
+      </div>
+      <div id="vroid-status" style="color:rgba(170,200,255,0.6); font-size:11px; margin-bottom:12px;"></div>
+      <div id="vroid-grid" style="display:grid; grid-template-columns:repeat(auto-fill,minmax(140px,1fr)); gap:12px;"></div>
+      <div style="margin-top:16px; display:flex; gap:8px;">
+        <button id="vroid-login-btn" class="ctrl-btn">VRoid Hub ログイン</button>
+        <button id="vroid-logout-btn" class="ctrl-btn" style="display:none;">ログアウト</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Control bar -->
   <div id="control-bar">
     <button class="ctrl-btn" id="btn-pause">⏸ Pause</button>
@@ -261,6 +277,7 @@
 
     <button class="ctrl-btn" id="btn-vrm-toggle">VRM Avatar</button>
     <input type="file" id="vrm-file-input" accept=".vrm" style="display:none">
+    <button class="ctrl-btn" id="btn-vroid-hub">VRoid Hub</button>
 
     <div class="ctrl-sep"></div>
 
