@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RuView — 3D Skeleton Viewer</title>
+  <style>
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+    :root {
+      --bg:        #0a0a1a;
+      --cyan:      #00ccff;
+      --green:     #00d878;
+      --amber:     #ffb020;
+      --red:       #ff4455;
+      --text:      #aaddff;
+      --text-dim:  rgba(170,200,255,0.5);
+      --panel-bg:  rgba(10,10,26,0.88);
+      --panel-border: rgba(0,200,255,0.18);
+      --font:      'Courier New', Courier, monospace;
+    }
+
+    html, body {
+      width: 100%; height: 100%;
+      overflow: hidden;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      font-size: 12px;
+    }
+
+    /* ── 3D canvas container ── */
+    #canvas-container {
+      position: fixed;
+      inset: 0;
+    }
+    #canvas-container canvas {
+      display: block;
+      width: 100% !important;
+      height: 100% !important;
+    }
+
+    /* ── HUD top-left ── */
+    #hud-tl {
+      position: fixed;
+      top: 14px; left: 16px;
+      z-index: 20;
+      pointer-events: none;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .brand {
+      font-size: 15px;
+      font-weight: bold;
+      color: var(--cyan);
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+    }
+    .badge {
+      display: inline-block;
+      padding: 2px 10px;
+      border-radius: 10px;
+      font-size: 10px;
+      font-weight: bold;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    .badge--sim  { background: rgba(255,176,32,0.12); color: var(--amber); border: 1px solid var(--amber); }
+    .badge--live { background: rgba(0,216,120,0.12);  color: var(--green); border: 1px solid var(--green); }
+    .badge--srv  { background: rgba(0,200,255,0.12);  color: var(--cyan);  border: 1px solid var(--cyan);  }
+    #node-count {
+      font-size: 10px;
+      color: var(--text-dim);
+    }
+    #node-count span {
+      color: var(--cyan);
+    }
+
+    /* ── HUD top-right ── */
+    #hud-tr {
+      position: fixed;
+      top: 14px; right: 16px;
+      z-index: 20;
+      display: flex;
+      gap: 12px;
+      align-items: center;
+    }
+    #hud-tr a {
+      color: var(--text-dim);
+      text-decoration: none;
+      font-size: 11px;
+      padding: 4px 10px;
+      border: 1px solid var(--panel-border);
+      border-radius: 6px;
+      background: var(--panel-bg);
+      backdrop-filter: blur(8px);
+      transition: color 0.2s, border-color 0.2s;
+    }
+    #hud-tr a:hover { color: var(--cyan); border-color: var(--cyan); }
+
+    /* ── Bottom control bar ── */
+    #control-bar {
+      position: fixed;
+      bottom: 0; left: 0; right: 0;
+      height: 68px;
+      background: var(--panel-bg);
+      backdrop-filter: blur(14px);
+      border-top: 1px solid var(--panel-border);
+      z-index: 20;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 0 18px;
+    }
+
+    .ctrl-sep {
+      width: 1px;
+      height: 28px;
+      background: var(--panel-border);
+      flex-shrink: 0;
+    }
+
+    button.ctrl-btn {
+      background: rgba(0,200,255,0.08);
+      border: 1px solid var(--panel-border);
+      color: var(--text);
+      font-family: var(--font);
+      font-size: 11px;
+      padding: 5px 14px;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: background 0.2s, border-color 0.2s, color 0.2s;
+      white-space: nowrap;
+    }
+    button.ctrl-btn:hover { background: rgba(0,200,255,0.18); border-color: var(--cyan); color: var(--cyan); }
+    button.ctrl-btn.active { background: rgba(0,200,255,0.22); border-color: var(--cyan); color: var(--cyan); }
+
+    select.ctrl-select {
+      background: rgba(0,200,255,0.05);
+      border: 1px solid var(--panel-border);
+      color: var(--text);
+      font-family: var(--font);
+      font-size: 11px;
+      padding: 5px 10px;
+      border-radius: 6px;
+      cursor: pointer;
+      outline: none;
+    }
+    select.ctrl-select:focus { border-color: var(--cyan); }
+    select.ctrl-select option { background: #0d1020; }
+
+    .stat-group {
+      display: flex;
+      gap: 16px;
+      margin-left: auto;
+      align-items: center;
+    }
+    .stat {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 1px;
+    }
+    .stat-label { font-size: 9px; color: var(--text-dim); letter-spacing: 0.06em; }
+    .stat-value { font-size: 13px; color: var(--cyan); font-weight: bold; }
+    .stat-value.green { color: var(--green); }
+
+    /* ── Loading overlay ── */
+    #loading {
+      position: fixed;
+      inset: 0;
+      background: var(--bg);
+      z-index: 100;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      transition: opacity 0.6s;
+    }
+    #loading.hidden { opacity: 0; pointer-events: none; }
+    .loading-title { font-size: 18px; color: var(--cyan); letter-spacing: 0.15em; }
+    .loading-sub   { font-size: 11px; color: var(--text-dim); }
+    .loading-bar-wrap { width: 200px; height: 2px; background: rgba(0,200,255,0.15); border-radius: 2px; overflow: hidden; }
+    .loading-bar { height: 100%; width: 0%; background: var(--cyan); transition: width 0.3s; }
+  </style>
+</head>
+<body>
+
+  <!-- Loading -->
+  <div id="loading">
+    <div class="loading-title">RuView</div>
+    <div class="loading-bar-wrap"><div class="loading-bar" id="loading-bar"></div></div>
+    <div class="loading-sub" id="loading-msg">Initializing 3D scene...</div>
+  </div>
+
+  <!-- 3D canvas -->
+  <div id="canvas-container"></div>
+
+  <!-- HUD top-left -->
+  <div id="hud-tl">
+    <span class="brand">RuView · 3D Skeleton</span>
+    <span class="badge badge--sim" id="source-badge">SIMULATION</span>
+    <span id="node-count">ESP32 <span id="node-active">0</span> / 4 nodes</span>
+  </div>
+
+  <!-- HUD top-right -->
+  <div id="hud-tr">
+    <a href="index.html">Dashboard</a>
+    <a href="observatory.html">Observatory</a>
+  </div>
+
+  <!-- Control bar -->
+  <div id="control-bar">
+    <button class="ctrl-btn" id="btn-pause">⏸ Pause</button>
+
+    <select class="ctrl-select" id="pose-select">
+      <option value="auto">Auto-Cycle</option>
+      <option value="standing">Standing</option>
+      <option value="walking">Walking</option>
+      <option value="sitting">Sitting</option>
+      <option value="crouching">Crouching</option>
+    </select>
+
+    <button class="ctrl-btn" id="btn-reset-cam">⟳ Camera</button>
+
+    <div class="ctrl-sep"></div>
+
+    <div class="stat-group">
+      <div class="stat">
+        <span class="stat-label">HR</span>
+        <span class="stat-value" id="stat-hr">--</span>
+      </div>
+      <div class="stat">
+        <span class="stat-label">RESP</span>
+        <span class="stat-value" id="stat-resp">--</span>
+      </div>
+      <div class="stat">
+        <span class="stat-label">PERSONS</span>
+        <span class="stat-value green" id="stat-persons">--</span>
+      </div>
+      <div class="stat">
+        <span class="stat-label">CONF</span>
+        <span class="stat-value" id="stat-conf">--%</span>
+      </div>
+    </div>
+  </div>
+
+  <!--
+    Three.js r128 をグローバルスクリプトタグで読み込む。
+    body-model.js / scene.js が window.THREE を参照するため必須。
+    注意: r160 は examples/js/controls/OrbitControls.js を削除済み (404) → r128 を使用。
+
+    フェーズ2 (VRM対応) 追加時は以下2行をアンコメントするだけ:
+    <script src="https://unpkg.com/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+    <script src="https://unpkg.com/@pixiv/three-vrm@0/lib/three-vrm.js"></script>
+  -->
+  <script src="https://unpkg.com/three@0.128.0/build/three.min.js"></script>
+  <script src="https://unpkg.com/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+
+  <script type="module" src="skeleton3d.js"></script>
+</body>
+</html>

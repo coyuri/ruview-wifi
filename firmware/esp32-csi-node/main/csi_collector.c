@@ -117,8 +117,8 @@ size_t csi_serialize_frame(const wifi_csi_info_t *info, uint8_t *buf, size_t buf
     uint32_t magic = CSI_MAGIC;
     memcpy(&buf[0], &magic, 4);
 
-    /* Node ID */
-    buf[4] = (uint8_t)CONFIG_CSI_NODE_ID;
+    /* Node ID — use NVS runtime value so each board reports correctly */
+    buf[4] = g_nvs_config.node_id;
 
     /* Number of antennas */
     buf[5] = n_antennas;

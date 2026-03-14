@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "builds": [
+    { "src": "ui/**", "use": "@vercel/static" }
+  ],
+  "routes": [
+    { "src": "/skeleton3d(.*)", "dest": "/ui/skeleton3d$1" },
+    { "src": "/observatory(.*)", "dest": "/ui/observatory$1" },
+    { "src": "/pose-fusion(.*)", "dest": "/ui/pose-fusion$1" },
+    { "src": "/mobile(.*)", "dest": "/ui/mobile$1" },
+    { "src": "/components/(.*)", "dest": "/ui/components/$1" },
+    { "src": "/services/(.*)", "dest": "/ui/services/$1" },
+    { "src": "/config/(.*)", "dest": "/ui/config/$1" },
+    { "src": "/(.*\\.(js|css|html|png|jpg|svg|ico|json|woff2?))", "dest": "/ui/$1" },
+    { "src": "/", "dest": "/ui/index.html" },
+    { "src": "/(.*)", "dest": "/ui/$1" }
+  ]
+}

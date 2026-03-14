@@ -23,6 +23,7 @@ rust-port/wifi-densepose-rs/data/recordings/
 nvs.bin
 nvs_config.csv
 nvs_provision.bin
+nvs_node*.bin
 
 # Working artifacts that should not land in root
 /*.wasm
