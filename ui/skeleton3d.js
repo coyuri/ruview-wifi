@@ -390,6 +390,7 @@ class Skeleton3DApp {
     this._serverPersons = [];
     this._nodeActive   = new Set();
     this._lastUpdate   = 0;
+    this._serverMotionLevel = null; // ESP32 motion_level → sim pose mapping
   }
 
   init() {
@@ -465,19 +466,41 @@ class Skeleton3DApp {
       }
     } else {
       // シミュレーションモード: PoseSystem で1人分生成
-      personsKps = [{
-        id:     'sim-0',
-        kps17:  this._sim.getKeypoints(0, [0, 0, 0]),
-        conf:   0.85,
-        offset: [0, 0, 0],
-      }];
+      // AUTO時はサーバーのmotion_levelでポーズ・表示を決定
+      const ML_POSE = {
+        absent:          'standing',  // conf=0で非表示
+        present_still:   'sitting',   // 座っている
+        present_moving:  'walking',   // 動いている
+        active:          'walking',   // アクティブ
+      };
+      const ml = this._serverMotionLevel;
+      let simConf = 0.85;
+      if (ml && this._sim.pose === 'auto') {
+        const savedPose = this._sim.pose;
+        this._sim.pose = ML_POSE[ml] || 'standing';
+        simConf = ml === 'absent' ? 0.0 : (ml === 'active' ? 0.92 : 0.85);
+        personsKps = [{
+          id:     'sim-0',
+          kps17:  this._sim.getKeypoints(0, [0, 0, 0]),
+          conf:   simConf,
+          offset: [0, 0, 0],
+        }];
+        this._sim.pose = savedPose;
+      } else {
+        personsKps = [{
+          id:     'sim-0',
+          kps17:  this._sim.getKeypoints(0, [0, 0, 0]),
+          conf:   0.85,
+          offset: [0, 0, 0],
+        }];
+      }
       // シミュレーション用バイタル（揺らぎあり）
       const hr   = 72 + Math.sin(elapsed * 0.13) * 6 + Math.sin(elapsed * 0.37) * 3;
       const resp = 16 + Math.sin(elapsed * 0.07) * 2;
       document.getElementById('stat-hr').textContent   = Math.round(hr) + ' bpm';
       document.getElementById('stat-resp').textContent = resp.toFixed(1) + '/m';
-      document.getElementById('stat-persons').textContent = '1';
-      document.getElementById('stat-conf').textContent    = '85%';
+      document.getElementById('stat-persons').textContent = (ml && ml !== 'absent') ? '1' : (ml ? '0' : '1');
+      document.getElementById('stat-conf').textContent    = Math.round(simConf * 100) + '%';
     }
 
     this._driver.update(personsKps, delta);
@@ -532,6 +555,10 @@ class Skeleton3DApp {
     } else if (data.source === 'esp32') {
       // ESP32からのデータだがポーズなし → サーバー接続バッジ
       this._updateBadge('srv');
+      // motion_level → シミュレーションポーズに反映
+      if (data.classification?.motion_level) {
+        this._serverMotionLevel = data.classification.motion_level;
+      }
     }
 
     // バイタルサイン更新
