@@ -11,7 +11,11 @@
 mod adaptive_classifier;
 mod rvf_container;
 mod rvf_pipeline;
+mod sona;
+mod sona_pipeline;
 mod vital_signs;
+
+use sona_pipeline::{SonaSample, SonaLiveState, SonaPipelineConfig, sona_adaptation_task};
 
 // Training pipeline modules (exposed via lib.rs)
 use wifi_densepose_sensing_server::{graph_transformer, trainer, dataset, embedding};
@@ -360,6 +364,13 @@ struct AppStateInner {
     // ── Adaptive classifier (environment-tuned) ──────────────────────────
     /// Trained adaptive model (loaded from data/adaptive_model.json or trained at runtime).
     adaptive_model: Option<adaptive_classifier::AdaptiveModel>,
+    // ── SONA online learning pipeline ────────────────────────────────────
+    /// Live telemetry state for the SONA adaptation task.
+    sona_state: SonaLiveState,
+    /// Channel sender for pushing CSI samples to the SONA adaptation task.
+    sona_tx: Option<tokio::sync::mpsc::Sender<SonaSample>>,
+    /// Pipeline configuration for the SONA adaptation task.
+    sona_config: SonaPipelineConfig,
 }
 
 /// Number of frames retained in `frame_history` for temporal analysis.
@@ -2558,6 +2569,39 @@ async fn adaptive_unload(State(state): State<SharedState>) -> Json<serde_json::V
     Json(serde_json::json!({ "success": true, "message": "Adaptive model unloaded." }))
 }
 
+// ── SONA live pipeline REST endpoints ────────────────────────────────────────
+
+/// POST /api/v1/sona/enable — enable the SONA online adaptation pipeline.
+async fn sona_enable(State(state): State<SharedState>) -> Json<serde_json::Value> {
+    let mut s = state.write().await;
+    s.sona_state.enabled = true;
+    Json(serde_json::json!({ "success": true, "enabled": true }))
+}
+
+/// POST /api/v1/sona/disable — disable the SONA online adaptation pipeline.
+async fn sona_disable(State(state): State<SharedState>) -> Json<serde_json::Value> {
+    let mut s = state.write().await;
+    s.sona_state.enabled = false;
+    Json(serde_json::json!({ "success": true, "enabled": false }))
+}
+
+/// GET /api/v1/sona/status — return live telemetry from the SONA pipeline.
+async fn sona_live_status(State(state): State<SharedState>) -> Json<serde_json::Value> {
+    let s = state.read().await;
+    Json(serde_json::json!({
+        "enabled":               s.sona_state.enabled,
+        "adaptation_count":      s.sona_state.adaptation_count,
+        "last_adaptation_tick":  s.sona_state.last_adaptation_tick,
+        "last_loss":             s.sona_state.last_loss,
+        "last_ewc_penalty":      s.sona_state.last_ewc_penalty,
+        "drift_detected":        s.sona_state.drift_detected,
+        "drift_magnitude":       s.sona_state.drift_magnitude,
+        "samples_buffered":      s.sona_state.samples_buffered,
+        "samples_dropped":       s.sona_state.samples_dropped,
+        "lora_delta_norm":       s.sona_state.lora_delta_norm,
+    }))
+}
+
 /// Generate a simple timestamp string (epoch seconds) for recording IDs.
 fn chrono_timestamp() -> u64 {
     std::time::SystemTime::now()
@@ -2803,6 +2847,41 @@ async fn udp_receiver_task(state: SharedState, udp_port: u16) {
                         extract_features_from_frame(&frame, &s.frame_history, sample_rate_hz);
                     smooth_and_classify(&mut s, &mut classification, raw_motion);
     adaptive_override(&s, &features, &mut classification);
+
+                    // SONA live pipeline: push sample for online adaptation (non-blocking).
+                    if s.sona_state.enabled {
+                        if let Some(ref tx) = s.sona_tx {
+                            // Map motion level to a pseudo-label float.
+                            let pseudo_label = match classification.motion_level.as_str() {
+                                "absent"         => 0.00f32,
+                                "present_still"  => 0.25f32,
+                                "present_moving" => 0.75f32,
+                                "active"         => 1.00f32,
+                                _                => 0.50f32,
+                            };
+                            // Build 15-element feature vector (cast from f64).
+                            let feat_vec: Vec<f32> = vec![
+                                features.variance as f32,
+                                features.motion_band_power as f32,
+                                features.breathing_band_power as f32,
+                                features.spectral_power as f32,
+                                features.dominant_freq_hz as f32,
+                                features.change_points as f32,
+                                features.mean_rssi as f32,
+                                // pad to 15 elements
+                                0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                            ];
+                            let sona_sample = SonaSample {
+                                csi_features: feat_vec[..15].to_vec(),
+                                pseudo_label,
+                                confidence: classification.confidence,
+                                tick: s.tick,
+                            };
+                            if tx.try_send(sona_sample).is_err() {
+                                s.sona_state.samples_dropped += 1;
+                            }
+                        }
+                    }
 
                     // Update RSSI history
                     s.rssi_history.push_back(features.mean_rssi);
@@ -3608,6 +3687,10 @@ async fn main() {
                   m.trained_frames, m.training_accuracy * 100.0);
             m
         }),
+        // SONA online learning pipeline (disabled by default, enabled via REST)
+        sona_state: SonaLiveState::default(),
+        sona_tx: None,
+        sona_config: SonaPipelineConfig::default(),
     }));
 
     // Start background tasks based on source
@@ -3622,6 +3705,44 @@ async fn main() {
         _ => {
             tokio::spawn(simulated_data_task(state.clone(), args.tick_ms));
         }
+    }
+
+    // ── SONA online learning task ─────────────────────────────────────────────
+    // Set up channels and spawn the SONA adaptation background task.
+    // The task is always running; it only does work when sona_state.enabled = true
+    // and samples arrive via the mpsc channel.
+    {
+        let (sona_tx, sona_rx) = tokio::sync::mpsc::channel::<SonaSample>(256);
+        let (sona_state_tx, mut sona_state_rx) = tokio::sync::watch::channel(SonaLiveState::default());
+
+        // Store the sender in shared state so udp_receiver_task can push samples.
+        {
+            let mut s = state.write().await;
+            s.sona_tx = Some(sona_tx);
+        }
+
+        // Spawn the SONA adaptation task.
+        let sona_pipeline_config = SonaPipelineConfig::default();
+        tokio::spawn(sona_adaptation_task(sona_state_tx, sona_rx, sona_pipeline_config));
+
+        // Spawn a lightweight forwarder that copies telemetry from the watch
+        // channel back into AppStateInner::sona_state.
+        let sona_fwd_state = state.clone();
+        tokio::spawn(async move {
+            loop {
+                if sona_state_rx.changed().await.is_err() {
+                    break;
+                }
+                let telemetry = sona_state_rx.borrow().clone();
+                let mut s = sona_fwd_state.write().await;
+                // Preserve the samples_dropped counter accumulated in udp_receiver_task.
+                let dropped = s.sona_state.samples_dropped;
+                let enabled = s.sona_state.enabled;
+                s.sona_state = telemetry;
+                s.sona_state.samples_dropped = dropped;
+                s.sona_state.enabled = enabled;
+            }
+        });
     }
 
     // ADR-050: Parse bind address once, use for all listeners
@@ -3702,6 +3823,10 @@ async fn main() {
         .route("/api/v1/adaptive/train", post(adaptive_train))
         .route("/api/v1/adaptive/status", get(adaptive_status))
         .route("/api/v1/adaptive/unload", post(adaptive_unload))
+        // SONA online learning pipeline endpoints
+        .route("/api/v1/sona/enable",  post(sona_enable))
+        .route("/api/v1/sona/disable", post(sona_disable))
+        .route("/api/v1/sona/status",  get(sona_live_status))
         // Static UI files
         .nest_service("/ui", ServeDir::new(&ui_path))
         .layer(SetResponseHeaderLayer::overriding(

@@ -1,0 +1,14 @@
+firmware/
+rust-port/
+v1/
+.claude/
+.claude-flow/
+.swarm/
+scripts/
+docs/
+dist/
+node_modules/
+*.bin
+*.elf
+*.map
+*.log

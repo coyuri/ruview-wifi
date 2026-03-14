@@ -264,7 +264,11 @@ class WsClient {
 
   _connect() {
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    const url   = `${proto}://${location.host}/ws/sensing`;
+    // On localhost: sensing-server WebSocket runs on port 8765 (separate from HTTP)
+    const host = (location.hostname === 'localhost' || location.hostname === '127.0.0.1')
+      ? `${location.hostname}:8765`
+      : location.host;
+    const url = `${proto}://${host}/ws/sensing`;
 
     try {
       this._ws = new WebSocket(url);
@@ -467,6 +471,13 @@ class Skeleton3DApp {
         conf:   0.85,
         offset: [0, 0, 0],
       }];
+      // シミュレーション用バイタル（揺らぎあり）
+      const hr   = 72 + Math.sin(elapsed * 0.13) * 6 + Math.sin(elapsed * 0.37) * 3;
+      const resp = 16 + Math.sin(elapsed * 0.07) * 2;
+      document.getElementById('stat-hr').textContent   = Math.round(hr) + ' bpm';
+      document.getElementById('stat-resp').textContent = resp.toFixed(1) + '/m';
+      document.getElementById('stat-persons').textContent = '1';
+      document.getElementById('stat-conf').textContent    = '85%';
     }
 
     this._driver.update(personsKps, delta);

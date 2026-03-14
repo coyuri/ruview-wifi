@@ -450,7 +450,7 @@ export class BodyModel {
   update(delta) {
     if (!this.isVisible) return;
 
-    const lerpFactor = 1 - Math.pow(0.001, delta); // Smooth exponential lerp
+    const lerpFactor = Math.min(1.0, delta * 18.0); // ~0.08s to reach 95% of target
 
     // Lerp joint positions
     for (const [name, joint] of Object.entries(this.joints)) {
