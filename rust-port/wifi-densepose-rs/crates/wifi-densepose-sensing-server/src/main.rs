@@ -974,7 +974,12 @@ fn adaptive_override(state: &AppStateInner, features: &FeatureInfo, classificati
         );
         let (label, conf) = model.classify(&feat_arr);
         classification.motion_level = label.to_string();
-        classification.presence = label != "absent";
+        // Only override presence to false when the model is confident it's absent.
+        // Sitting still and empty room look similar (71% acc), so keep baseline
+        // presence if the model says "absent" with low confidence.
+        if label != "absent" || conf > 0.65 {
+            classification.presence = label != "absent";
+        }
         // Blend model confidence with existing smoothed confidence.
         classification.confidence = (conf * 0.7 + classification.confidence * 0.3).clamp(0.0, 1.0);
     }
@@ -1927,7 +1932,14 @@ fn derive_single_person_pose(
 
 fn derive_pose_from_sensing(update: &SensingUpdate) -> Vec<PersonDetection> {
     let cls = &update.classification;
-    if !cls.presence {
+    // Generate persons if presence flag is true, or if motion_level indicates
+    // someone is present (fallback for when adaptive model misclassifies still
+    // persons as "absent" — e.g. sitting still has similar CSI to empty room).
+    let motion_present = matches!(
+        cls.motion_level.as_str(),
+        "present_still" | "present_moving" | "active"
+    );
+    if !cls.presence && !motion_present {
         return vec![];
     }
 

@@ -511,6 +511,11 @@ class Skeleton3DApp {
 
   _serverPersonToKps17(person) {
     // サーバーの persons[].keypoints は [{name, x, y, z, confidence}, ...]
+    // サーバーは 2D ピクセル座標（640×480 canvas、中心 x=320, y=240）で送信
+    // 3D ワールド座標（m）へ変換:
+    //   ankle（y≈360px）→ world y = 0
+    //   nose（y≈160px）→ world y ≈ 1.7m
+    //   スケール: 200px = 1.7m → PX_TO_M = 0.0085
     const COCO_NAMES = [
       'nose','left_eye','right_eye','left_ear','right_ear',
       'left_shoulder','right_shoulder','left_elbow','right_elbow',
@@ -519,19 +524,26 @@ class Skeleton3DApp {
     ];
 
     if (!person.keypoints || person.keypoints.length < 17) {
-      // pose_keypoints: [[x,y,z,conf]×17] フォーマットも試みる
       if (person.pose_keypoints && person.pose_keypoints.length >= 17) {
         return person.pose_keypoints.map(kp => [kp[0], kp[1], kp[2] ?? 0]);
       }
       return null;
     }
 
-    // name ベースの keypoints をCOCO順に並べ替え
+    // 2D pixel → 3D world 変換定数
+    const PX_TO_M  = 0.0085;   // 1px ≈ 8.5mm (200px body = 1.7m)
+    const CENTER_X = 320;       // 画像中心 x
+    const GROUND_Y = 360;       // 足首レベル（y=240+120）
+
     const byName = {};
     for (const kp of person.keypoints) { byName[kp.name] = kp; }
     return COCO_NAMES.map((name, i) => {
       const kp = byName[name];
-      return kp ? [kp.x, kp.y, kp.z ?? 0] : [0, i < 5 ? 1.6 : 0.9, 0];
+      if (!kp) return [0, i < 5 ? 1.65 : i < 11 ? 1.0 : 0.4, 0];
+      const wx = (kp.x - CENTER_X) * PX_TO_M * 0.75; // 左右（少し縮小）
+      const wy = (GROUND_Y  - kp.y) * PX_TO_M;        // 上下（反転）
+      const wz = (kp.z ?? 0);                          // 奥行き
+      return [wx, wy, wz];
     });
   }
 
