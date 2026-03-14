@@ -78,7 +78,7 @@ impl Default for SonaPipelineConfig {
         Self {
             adaptation_interval_frames: 300,
             min_batch_size: 32,
-            confidence_threshold: 0.75,
+            confidence_threshold: 0.35,
             param_count: 15,
             lora_rank: 4,
             ewc_consolidate_every: 10,
