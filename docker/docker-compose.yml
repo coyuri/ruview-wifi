@@ -17,11 +17,12 @@ services:
       #          esp32          — receive real CSI frames from an ESP32 on UDP port 5005
       #          wifi           — use host Wi-Fi RSSI/scan data (Windows netsh)
       #          simulated      — generate synthetic CSI data (no hardware required)
-      - CSI_SOURCE=${CSI_SOURCE:-auto}
+      - CSI_SOURCE=${CSI_SOURCE:-esp32}
+      - SENSING_BIND_ADDR=0.0.0.0
       # VRoid Hub OAuth2 client secret (set in shell or .env before docker compose up)
       - VROID_CLIENT_SECRET=${VROID_CLIENT_SECRET:-}
     # command is passed as arguments to ENTRYPOINT (/bin/sh -c), so $CSI_SOURCE is expanded by the shell.
-    command: ["/app/sensing-server --source ${CSI_SOURCE:-auto} --tick-ms 100 --ui-path /app/ui --http-port 3000 --ws-port 3001"]
+    command: ["/app/sensing-server --source $${CSI_SOURCE:-esp32} --tick-ms 100 --ui-path /app/ui --http-port 3000 --ws-port 3001"]
 
   python-sensing:
     build:
@@ -33,3 +34,4 @@ services:
       - "0.0.0.0:8080:8080"   # UI
     environment:
       - PYTHONUNBUFFERED=1
+      - CSI_SOURCE=simulated

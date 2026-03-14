@@ -24,6 +24,7 @@ import asyncio
 import json
 import logging
 import math
+import os
 import signal
 import socket
 import struct
@@ -331,7 +332,10 @@ class SensingWebSocketServer:
             return Esp32UdpCollector(port=ESP32_UDP_PORT, sample_rate_hz=10.0)
 
         # 2. Platform-specific WiFi (auto-detect with graceful fallback)
-        collector = create_collector(preferred="auto", sample_rate_hz=10.0)
+        # CSI_SOURCE env var can force simulated mode (e.g. in Docker without WiFi HW)
+        _env_source = os.environ.get("CSI_SOURCE", "auto")
+        _preferred = "simulated" if _env_source == "simulated" else "auto"
+        collector = create_collector(preferred=_preferred, sample_rate_hz=10.0)
 
         # Map collector class to source label
         source_map = {

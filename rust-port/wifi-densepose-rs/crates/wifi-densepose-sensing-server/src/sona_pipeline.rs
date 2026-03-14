@@ -34,12 +34,16 @@ pub struct SonaLiveState {
     pub samples_buffered: usize,
     pub samples_dropped: u64,
     pub lora_delta_norm: f32,
+    /// True once the model has converged on this environment (loss stable).
+    pub space_learned: bool,
+    /// 0.0–1.0 learning progress (how many stable adaptations of the target).
+    pub learning_progress: f32,
 }
 
 impl Default for SonaLiveState {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             adaptation_count: 0,
             last_adaptation_tick: 0,
             last_loss: 0.0,
@@ -49,6 +53,8 @@ impl Default for SonaLiveState {
             samples_buffered: 0,
             samples_dropped: 0,
             lora_delta_norm: 0.0,
+            space_learned: false,
+            learning_progress: 0.0,
         }
     }
 }
@@ -130,6 +136,13 @@ pub async fn sona_adaptation_task(
     let mut last_ewc_penalty: f32 = 0.0;
     let mut lora_delta_norm: f32 = 0.0;
 
+    // Learning convergence tracking.
+    // "Space learned" = loss below threshold for STABLE_WINDOW consecutive adaptations.
+    const LOSS_STABLE_THRESHOLD: f32 = 0.15;
+    const STABLE_WINDOW: u64 = 5;
+    let mut stable_count: u64 = 0;
+    let mut space_learned = false;
+
     tracing::info!("SONA pipeline task started (param_count={}, lora_rank={})",
         config.param_count, config.lora_rank);
 
@@ -171,6 +184,11 @@ pub async fn sona_adaptation_task(
         if !should_adapt {
             // Publish buffered count without running adaptation.
             let drift_info = env_detector.drift_info();
+            let learning_progress = if space_learned {
+                1.0f32
+            } else {
+                (adapt_count as f32 / 20.0).min(0.99)
+            };
             let live = SonaLiveState {
                 enabled: true,
                 adaptation_count: adapt_count,
@@ -182,6 +200,8 @@ pub async fn sona_adaptation_task(
                 samples_buffered: sample_buffer.len(),
                 samples_dropped: 0, // tracked in AppStateInner
                 lora_delta_norm,
+                space_learned,
+                learning_progress,
             };
             let _ = state_tx.send(live);
             continue;
@@ -192,6 +212,16 @@ pub async fn sona_adaptation_task(
         adapt_count += 1;
 
         let result = adapter.adapt(&base_params, &sample_buffer);
+
+        // Guard: if NaN/Inf (gradient explosion), reset LoRA and base params.
+        if !result.final_loss.is_finite() {
+            tracing::warn!("SONA NaN/Inf detected at adapt #{} — resetting LoRA", adapt_count);
+            adapter.lora.reset();
+            base_params = vec![0.0f32; config.param_count];
+            adapt_count -= 1; // don't count this failed run
+            continue;
+        }
+
         last_loss = result.final_loss;
         last_ewc_penalty = result.ewc_penalty;
 
@@ -231,12 +261,32 @@ pub async fn sona_adaptation_task(
             tracing::debug!("SONA EWC++ consolidated at adaptation #{}", adapt_count);
         }
 
-        // Advance base params to the newly adapted params.
+        // Fold LoRA delta into base params, then reset LoRA to zero.
+        // This prevents unbounded accumulation: base absorbs the learned delta,
+        // and LoRA starts fresh for the next adaptation batch.
         base_params = result.adapted_params;
+        adapter.lora.reset();
+
+        // Update convergence tracking.
+        if last_loss < LOSS_STABLE_THRESHOLD {
+            stable_count += 1;
+        } else {
+            stable_count = 0;
+        }
+        if stable_count >= STABLE_WINDOW {
+            space_learned = true;
+        }
+        // learning_progress: ramp from 0 to 1 over the first 20 adaptations,
+        // then hold at 1.0 once space_learned.
+        let learning_progress = if space_learned {
+            1.0f32
+        } else {
+            (adapt_count as f32 / 20.0).min(0.99)
+        };
 
         tracing::info!(
-            "SONA adapt #{}: loss={:.4}, ewc_penalty={:.4}, delta_norm={:.4}, steps={}",
-            adapt_count, last_loss, last_ewc_penalty, lora_delta_norm, result.steps_taken
+            "SONA adapt #{}: loss={:.4}, ewc_penalty={:.4}, delta_norm={:.4}, steps={}, learned={}",
+            adapt_count, last_loss, last_ewc_penalty, lora_delta_norm, result.steps_taken, space_learned
         );
 
         // Broadcast updated telemetry.
@@ -252,6 +302,8 @@ pub async fn sona_adaptation_task(
             samples_buffered: sample_buffer.len(),
             samples_dropped: 0,
             lora_delta_norm,
+            space_learned,
+            learning_progress,
         };
         let _ = state_tx.send(live);
     }
