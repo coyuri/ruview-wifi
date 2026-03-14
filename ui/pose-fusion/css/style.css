@@ -179,7 +179,6 @@ body {
   border-radius: 4px;
   color: var(--green-glow);
   z-index: 5;
-  transform: scaleX(-1);
 }
 
 .camera-prompt {
@@ -531,6 +530,6 @@ body {
     height: auto;
     overflow: auto;
   }
-  .video-panel { aspect-ratio: 16/9; max-height: 50vh; }
+  .video-panel { aspect-ratio: 3/4; max-height: 75vh; }
   .side-panels { max-height: none; overflow: visible; }
 }

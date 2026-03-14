@@ -27,7 +27,7 @@ services:
       dockerfile: docker/Dockerfile.python
     image: ruvnet/wifi-densepose:python
     ports:
-      - "8765:8765"   # WebSocket
-      - "8080:8080"   # UI
+      - "0.0.0.0:8765:8765"   # WebSocket
+      - "0.0.0.0:8080:8080"   # UI
     environment:
       - PYTHONUNBUFFERED=1

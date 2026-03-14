@@ -118,6 +118,9 @@ export class GaussianSplatRenderer {
     this._animFrame = null;
     this._lastData = null;
 
+    // EMA-smoothed signal field (prevents heatmap flickering)
+    this._smoothedField = new Float32Array(this.gridSize * this.gridSize);
+
     // Start render loop
     this._animate();
   }
@@ -238,6 +241,12 @@ export class GaussianSplatRenderer {
 
     this.bodyBlob = new THREE.Points(geo, mat);
     this.scene.add(this.bodyBlob);
+
+    // Store stable per-splat base sizes so we don't call Math.random() per frame
+    this._blobBaseSizes = new Float32Array(count);
+    for (let i = 0; i < count; i++) {
+      this._blobBaseSizes[i] = Math.random() * 2;
+    }
   }
 
   // ---- Mouse controls (simple orbit) -------------------------------------
@@ -303,7 +312,7 @@ export class GaussianSplatRenderer {
     const signalField = data.signal_field || {};
     const nodes = data.nodes || [];
 
-    // -- Update signal field splats ----------------------------------------
+    // -- Update signal field splats (EMA smoothed to prevent vibration) -----
     if (signalField.values && this.fieldPoints) {
       const geo    = this.fieldPoints.geometry;
       const clr    = geo.attributes.splatColor.array;
@@ -311,9 +320,12 @@ export class GaussianSplatRenderer {
       const opac   = geo.attributes.splatOpacity.array;
       const vals   = signalField.values;
       const count  = Math.min(vals.length, this.gridSize * this.gridSize);
+      const alpha  = 0.12; // EMA factor — lower = smoother (less vibration)
 
       for (let i = 0; i < count; i++) {
-        const v = vals[i];
+        // Exponential moving average smoothing
+        this._smoothedField[i] = alpha * vals[i] + (1 - alpha) * this._smoothedField[i];
+        const v = this._smoothedField[i];
         const [r, g, b] = valueToColor(v);
         clr[i * 3]     = r;
         clr[i * 3 + 1] = g;
@@ -358,7 +370,7 @@ export class GaussianSplatRenderer {
             bClr[i * 3 + 2] = 0.4;
           }
 
-          bSize[i] = (2 + Math.random() * 2) * breathPulse;
+          bSize[i] = (2 + this._blobBaseSizes[i]) * breathPulse;
         } else {
           bOpac[i] = 0.0;
         }

@@ -137,7 +137,9 @@ function init() {
   csiCnn.tryLoadWasm(wasmBase);
 
   // Auto-connect to local sensing server WebSocket if available
-  const defaultWsUrl = 'ws://localhost:8765/ws/sensing';
+  // Use current hostname so it works from phones/tablets on the same network
+  const wsHost = window.location.hostname || 'localhost';
+  const defaultWsUrl = `ws://${wsHost}:8765/ws/sensing`;
   if (wsUrlInput) wsUrlInput.value = defaultWsUrl;
   csiSimulator.connectLive(defaultWsUrl).then(ok => {
     if (ok && connectWsBtn) {

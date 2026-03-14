@@ -125,12 +125,19 @@ export class CanvasRenderer {
     ctx.globalAlpha = 1;
 
     // Confidence label + keypoint count
+    // The canvas has CSS scaleX(-1) applied (selfie-mirror), so we flip the
+    // canvas context before drawing text to cancel out the mirror effect.
     if (opts.label) {
       const visCount = keypoints.filter(kp => kp && kp.confidence >= minConf).length;
+      const text = `${opts.label} · ${visCount} joints`;
       ctx.font = '11px "JetBrains Mono", monospace';
       ctx.fillStyle = jointColor;
       ctx.globalAlpha = 0.8;
-      ctx.fillText(`${opts.label} · ${visCount} joints`, 8, height - 8);
+      ctx.save();
+      ctx.scale(-1, 1);          // flip X in canvas coords to cancel CSS scaleX(-1)
+      ctx.translate(-width, 0);  // shift back so (0,0) is the mirrored top-left
+      ctx.fillText(text, 8, height - 8);
+      ctx.restore();
       ctx.globalAlpha = 1;
     }
   }

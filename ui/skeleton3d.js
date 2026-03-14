@@ -98,7 +98,52 @@ class KeypointAdapter {
    * @returns {null}  (フェーズ2で VrmBoneRotations オブジェクトを返す)
    */
   toVrmRotations(kps17) {
-    return null; // TODO フェーズ2
+    const THREE = window.THREE;
+    if (!THREE || !kps17 || kps17.length < 17) return null;
+
+    const v = (i) => new THREE.Vector3(kps17[i][0], kps17[i][1], kps17[i][2]);
+    const mid = (a, b) => new THREE.Vector3().addVectors(a, b).multiplyScalar(0.5);
+    const normDir = (from, to) => new THREE.Vector3().subVectors(to, from).normalize();
+    const boneQuat = (rest, actual) => {
+      const q = new THREE.Quaternion();
+      if (actual.lengthSq() < 0.0001) return q;
+      try { q.setFromUnitVectors(rest.clone().normalize(), actual.clone().normalize()); }
+      catch (_) { /* parallel / antiparallel edge case */ }
+      return q;
+    };
+
+    const nose = v(0);
+    const lSh = v(5),  rSh = v(6);
+    const lEl = v(7),  rEl = v(8);
+    const lWr = v(9),  rWr = v(10);
+    const lHip = v(11), rHip = v(12);
+    const lKn = v(13), rKn = v(14);
+    const lAn = v(15), rAn = v(16);
+
+    const chest  = mid(lSh, rSh);
+    const pelvis = mid(lHip, rHip);
+
+    const UP   = new THREE.Vector3(0, 1, 0);
+    const DOWN = new THREE.Vector3(0, -1, 0);
+    // T-pose arm rest: left arm points +X, right arm points -X
+    const L_ARM = new THREE.Vector3(1, 0, 0);
+    const R_ARM = new THREE.Vector3(-1, 0, 0);
+
+    return {
+      hips:          boneQuat(UP,    normDir(pelvis, chest)),
+      spine:         boneQuat(UP,    normDir(pelvis, chest)),
+      chest:         boneQuat(UP,    normDir(pelvis, chest)),
+      neck:          boneQuat(UP,    normDir(chest, nose)),
+      head:          boneQuat(UP,    normDir(chest, nose)),
+      leftUpperArm:  boneQuat(L_ARM, normDir(lSh, lEl)),
+      leftLowerArm:  boneQuat(L_ARM, normDir(lEl, lWr)),
+      rightUpperArm: boneQuat(R_ARM, normDir(rSh, rEl)),
+      rightLowerArm: boneQuat(R_ARM, normDir(rEl, rWr)),
+      leftUpperLeg:  boneQuat(DOWN,  normDir(lHip, lKn)),
+      leftLowerLeg:  boneQuat(DOWN,  normDir(lKn, lAn)),
+      rightUpperLeg: boneQuat(DOWN,  normDir(rHip, rKn)),
+      rightLowerLeg: boneQuat(DOWN,  normDir(rKn, rAn)),
+    };
   }
 }
 
@@ -153,47 +198,63 @@ class WireframeDriver {
   }
 }
 
-/*
- * ═══════════════════════════════════════════════════════════════════
- * VrmDriver — フェーズ2 スタブ（あとで実装）
- * ═══════════════════════════════════════════════════════════════════
- *
- * 使い方（フェーズ2）:
- *   1. skeleton3d.html に以下を追加:
- *      <script src="https://unpkg.com/three@0.160.0/examples/js/loaders/GLTFLoader.js"></script>
- *      <script src="https://unpkg.com/@pixiv/three-vrm@2/lib/three-vrm.js"></script>
- *
- *   2. skeleton3d.js の app.init() を:
- *      this.driver = new WireframeDriver(...)
- *      → await VrmDriver.create(scene, './avatar.vrm', adapter)
- *      に差し替えるだけ。
- *
- * class VrmDriver {
- *   static async create(threeScene, url, adapter) {
- *     const driver = new VrmDriver(threeScene, adapter);
- *     await driver._load(url);
- *     return driver;
- *   }
- *   async _load(url) {
- *     const loader = new THREE.GLTFLoader();
- *     loader.register(p => new THREE.VRMLoaderPlugin(p));
- *     const gltf = await loader.loadAsync(url);
- *     this._vrm = gltf.userData.vrm;
- *     this._vrm.scene.rotation.y = Math.PI; // VRM は Z-forward
- *     this._scene.add(this._vrm.scene);
- *   }
- *   update(personsKps, delta) {
- *     this._vrm.update(delta);
- *     if (!personsKps.length) return;
- *     const rots = this._adapter.toVrmRotations(personsKps[0].kps17);
- *     if (!rots) return;
- *     const hum = this._vrm.humanoid;
- *     hum.getBoneNode('hips').rotation.copy(rots.hips);
- *     hum.getBoneNode('spine').rotation.copy(rots.spine);
- *     // ... 全ボーン適用
- *   }
- * }
- */
+// ═══════════════════════════════════════════════════════════════════
+// VrmDriver — フェーズ2 実装
+// ═══════════════════════════════════════════════════════════════════
+
+class VrmDriver {
+  static async create(threeScene, url, adapter, onLoad, onError) {
+    const driver = new VrmDriver(threeScene, adapter);
+    try {
+      await driver._load(url);
+      if (onLoad) onLoad(driver._vrm);
+    } catch (e) {
+      if (onError) onError(e);
+      throw e;
+    }
+    return driver;
+  }
+
+  constructor(threeScene, adapter) {
+    this._scene   = threeScene;
+    this._adapter = adapter;
+    this._vrm     = null;
+  }
+
+  async _load(url) {
+    const THREE = window.THREE;
+    return new Promise((resolve, reject) => {
+      const loader = new THREE.GLTFLoader();
+      loader.load(url, async (gltf) => {
+        try {
+          const vrm = await THREE.VRM.from(gltf);
+          vrm.scene.rotation.y = Math.PI;
+          this._scene.add(vrm.scene);
+          this._vrm = vrm;
+          resolve(vrm);
+        } catch (e) { reject(e); }
+      }, undefined, reject);
+    });
+  }
+
+  update(personsKps, delta) {
+    if (!this._vrm) return;
+    this._vrm.update(delta);
+    if (!personsKps || !personsKps.length) return;
+    const rots = this._adapter.toVrmRotations(personsKps[0].kps17);
+    if (!rots) return;
+    const hum = this._vrm.humanoid;
+    for (const [boneName, quat] of Object.entries(rots)) {
+      const node = hum.getBoneNode(boneName);
+      if (node) node.quaternion.copy(quat);
+    }
+  }
+
+  dispose() {
+    if (this._vrm && this._vrm.scene) this._scene.remove(this._vrm.scene);
+    this._vrm = null;
+  }
+}
 
 // ═══════════════════════════════════════════════════════════════════
 // SimulationEngine
@@ -389,6 +450,7 @@ class Skeleton3DApp {
     this._liveMode     = false;
     this._serverPersons = [];
     this._nodeActive   = new Set();
+    this._nodeSeen     = new Map(); // node_id → last seen timestamp (TTL-based)
     this._lastUpdate   = 0;
     this._serverMotionLevel = null; // ESP32 motion_level → sim pose mapping
   }
@@ -402,9 +464,11 @@ class Skeleton3DApp {
 
     this._loadingProgress(40, 'Building skeleton...');
 
-    // ── SkeletonDriver（フェーズ1: Wireframe）──
-    this._adapter = new KeypointAdapter();
-    this._driver  = new WireframeDriver(this._scene3d.scene, this._adapter);
+    // ── SkeletonDriver（フェーズ1: Wireframe / フェーズ2: VRM）──
+    this._adapter        = new KeypointAdapter();
+    this._wireframeDriver = new WireframeDriver(this._scene3d.scene, this._adapter);
+    this._driver          = this._wireframeDriver;
+    this._vrmDriver       = null;
 
     // ── Simulation ──
     this._sim = new SimulationEngine();
@@ -439,6 +503,42 @@ class Skeleton3DApp {
         setTimeout(() => { el.style.display = 'none'; }, 700);
       }, 300);
     }, 400);
+
+    // ── SONA 学習状態ポーリング（5秒ごと）──
+    this._pollSona();
+    setInterval(() => this._pollSona(), 5000);
+  }
+
+  async _pollSona() {
+    try {
+      const res = await fetch('/api/v1/sona/status');
+      if (!res.ok) return;
+      const s = await res.json();
+      this._updateSonaUI(s);
+    } catch (_) { /* サーバー未接続時は無視 */ }
+  }
+
+  _updateSonaUI(s) {
+    const label = document.getElementById('sona-label');
+    const bar   = document.getElementById('sona-bar');
+    if (!s.enabled) {
+      label.textContent = 'SONA OFF';
+      label.className   = '';
+      bar.style.width   = '0%';
+      bar.className     = '';
+      return;
+    }
+    const pct = Math.round((s.learning_progress ?? 0) * 100);
+    bar.style.width = pct + '%';
+    if (s.space_learned) {
+      label.textContent = 'LEARNED ✓';
+      label.className   = 'learned';
+      bar.className     = 'learned';
+    } else {
+      label.textContent = `LEARNING ${pct}%`;
+      label.className   = 'learning';
+      bar.className     = '';
+    }
   }
 
   // ── animation tick ──────────────────────────────────────────────
@@ -552,9 +652,18 @@ class Skeleton3DApp {
   _handleData(data) {
     if (data.msg_type !== 'sensing_update') return;
 
-    // ノードのアクティブ状態を更新
+    // ノードのアクティブ状態を更新（TTL 10秒で蓄積、瞬間的なドロップを防ぐ）
     if (data.nodes) {
-      this._nodeActive = new Set(data.nodes.map(n => n.node_id));
+      const now = Date.now();
+      const TTL = 10000; // 10 seconds
+      for (const n of data.nodes) {
+        this._nodeSeen.set(n.node_id, now);
+      }
+      // Prune stale nodes
+      for (const [id, t] of this._nodeSeen) {
+        if (now - t > TTL) this._nodeSeen.delete(id);
+      }
+      this._nodeActive = new Set(this._nodeSeen.keys());
       document.getElementById('node-active').textContent = this._nodeActive.size;
     }
 
@@ -619,8 +728,10 @@ class Skeleton3DApp {
   // ── ノードマーカー点滅 ──────────────────────────────────────────
 
   _pulseNodes(elapsed) {
+    // Sort seen node IDs and assign to markers by position (handles 1-4 or 0-3 indexing)
+    const sortedIds = [...this._nodeActive].sort((a, b) => a - b);
     this._nodeMarkers.forEach((m, i) => {
-      const active = this._nodeActive.has(i);
+      const active = i < sortedIds.length;
       const pulse  = active
         ? 0.5 + Math.sin(elapsed * 3.5 + i * 0.8) * 0.35
         : 0.15;
@@ -650,6 +761,48 @@ class Skeleton3DApp {
       this._scene3d.camera.lookAt(0, 1.5, 0);
       this._scene3d.controls.target.set(0, 1.2, 0);
       this._scene3d.controls.update();
+    });
+
+    // VRM Avatar toggle
+    const btnVrm   = document.getElementById('btn-vrm-toggle');
+    const vrmInput = document.getElementById('vrm-file-input');
+    btnVrm.addEventListener('click', () => {
+      if (this._vrmDriver) {
+        // VRM → Wireframe に戻す
+        this._vrmDriver.dispose();
+        this._vrmDriver = null;
+        this._driver = this._wireframeDriver;
+        btnVrm.textContent = 'VRM Avatar';
+        btnVrm.classList.remove('active');
+      } else {
+        // ファイル選択ダイアログを開く
+        vrmInput.click();
+      }
+    });
+    vrmInput.addEventListener('change', async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const url = URL.createObjectURL(file);
+      btnVrm.textContent = 'Loading...';
+      btnVrm.disabled = true;
+      try {
+        this._vrmDriver = await VrmDriver.create(
+          this._scene3d.scene,
+          url,
+          this._adapter,
+        );
+        // WireframeDriver を非表示にしてVRMに切替
+        this._wireframeDriver.dispose();
+        this._driver = this._vrmDriver;
+        btnVrm.textContent = '⬛ Wireframe';
+        btnVrm.classList.add('active');
+      } catch (err) {
+        console.error('VRM load failed:', err);
+        btnVrm.textContent = 'Load failed';
+      } finally {
+        btnVrm.disabled = false;
+        vrmInput.value = '';
+      }
     });
   }
 

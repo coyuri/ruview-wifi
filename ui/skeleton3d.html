@@ -166,6 +166,38 @@
     .stat-value { font-size: 13px; color: var(--cyan); font-weight: bold; }
     .stat-value.green { color: var(--green); }
 
+    /* ── SONA learning indicator ── */
+    #sona-indicator {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 3px;
+      min-width: 80px;
+    }
+    #sona-label {
+      font-size: 9px;
+      letter-spacing: 0.06em;
+      color: var(--text-dim);
+      font-weight: bold;
+    }
+    #sona-label.learning { color: #f0c040; }
+    #sona-label.learned  { color: var(--green); }
+    #sona-bar-wrap {
+      width: 80px;
+      height: 4px;
+      background: rgba(255,255,255,0.1);
+      border-radius: 2px;
+      overflow: hidden;
+    }
+    #sona-bar {
+      height: 100%;
+      width: 0%;
+      background: #f0c040;
+      border-radius: 2px;
+      transition: width 0.6s ease, background 0.4s;
+    }
+    #sona-bar.learned { background: var(--green); }
+
     /* ── Loading overlay ── */
     #loading {
       position: fixed;
@@ -227,6 +259,11 @@
 
     <div class="ctrl-sep"></div>
 
+    <button class="ctrl-btn" id="btn-vrm-toggle">VRM Avatar</button>
+    <input type="file" id="vrm-file-input" accept=".vrm" style="display:none">
+
+    <div class="ctrl-sep"></div>
+
     <div class="stat-group">
       <div class="stat">
         <span class="stat-label">HR</span>
@@ -245,19 +282,22 @@
         <span class="stat-value" id="stat-conf">--%</span>
       </div>
     </div>
+
+    <div class="ctrl-sep"></div>
+
+    <!-- SONA learning indicator -->
+    <div id="sona-indicator" title="SONA online learning status">
+      <span id="sona-label">SONA OFF</span>
+      <div id="sona-bar-wrap">
+        <div id="sona-bar"></div>
+      </div>
+    </div>
   </div>
 
-  <!--
-    Three.js r128 をグローバルスクリプトタグで読み込む。
-    body-model.js / scene.js が window.THREE を参照するため必須。
-    注意: r160 は examples/js/controls/OrbitControls.js を削除済み (404) → r128 を使用。
-
-    フェーズ2 (VRM対応) 追加時は以下2行をアンコメントするだけ:
-    <script src="https://unpkg.com/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
-    <script src="https://unpkg.com/@pixiv/three-vrm@0/lib/three-vrm.js"></script>
-  -->
   <script src="https://unpkg.com/three@0.128.0/build/three.min.js"></script>
   <script src="https://unpkg.com/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+  <script src="https://unpkg.com/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+  <script src="https://unpkg.com/@pixiv/three-vrm@0/lib/three-vrm.js"></script>
 
   <script type="module" src="skeleton3d.js"></script>
 </body>
