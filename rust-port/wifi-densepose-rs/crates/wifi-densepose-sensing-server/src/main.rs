@@ -30,9 +30,10 @@ use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
         Path,
+        Query,
         State,
     },
-    response::{Html, IntoResponse, Json},
+    response::{Html, IntoResponse, Json, Redirect},
     routing::{delete, get, post},
     Router,
 };
@@ -1743,12 +1744,12 @@ fn compute_person_score(feat: &FeatureInfo) -> f64 {
 /// Uses asymmetric thresholds: higher threshold to add a person, lower to remove.
 /// This prevents flickering at the boundary.
 fn score_to_person_count(smoothed_score: f64) -> usize {
-    // Thresholds chosen conservatively for single-ESP32 link:
-    //   score > 0.50 → 2 persons (needs sustained high variance + change points)
-    //   score > 0.80 → 3 persons (very high activity, rare with single link)
-    if smoothed_score > 0.80 {
+    // Raised thresholds: single person easily exceeds 0.50, causing false 2-person detection.
+    //   score > 0.92 → 2 persons (requires very high sustained multi-source variance)
+    //   score > 0.98 → 3 persons (extremely rare with 4-node setup)
+    if smoothed_score > 0.98 {
         3
-    } else if smoothed_score > 0.50 {
+    } else if smoothed_score > 0.92 {
         2
     } else {
         1
@@ -2871,15 +2872,19 @@ async fn udp_receiver_task(state: SharedState, udp_port: u16) {
                                 "active"         => 1.00f32,
                                 _                => 0.50f32,
                             };
-                            // Build 15-element feature vector (cast from f64).
+                            // Build 15-element feature vector normalised to ~[0,1].
+                            // Raw power features span several orders of magnitude; log1p/8
+                            // maps e.g. spectral_power=144 → 0.62, preventing LoRA gradient
+                            // explosion (effective lr = lr * scale * inp).
+                            let ln8 = |x: f64| -> f32 { (x.max(0.0) as f32).ln_1p() / 8.0 };
                             let feat_vec: Vec<f32> = vec![
-                                features.variance as f32,
-                                features.motion_band_power as f32,
-                                features.breathing_band_power as f32,
-                                features.spectral_power as f32,
-                                features.dominant_freq_hz as f32,
-                                features.change_points as f32,
-                                features.mean_rssi as f32,
+                                ln8(features.variance),
+                                ln8(features.motion_band_power),
+                                ln8(features.breathing_band_power),
+                                ln8(features.spectral_power),
+                                (features.dominant_freq_hz as f32).clamp(0.0, 10.0) / 10.0,
+                                (features.change_points as f32).clamp(0.0, 30.0) / 30.0,
+                                (features.mean_rssi as f32).abs().clamp(0.0, 100.0) / 100.0,
                                 // pad to 15 elements
                                 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
                             ];
@@ -3102,6 +3107,87 @@ async fn broadcast_tick_task(state: SharedState, tick_ms: u64) {
                     let _ = s.tx.send(json);
                 }
             }
+        }
+    }
+}
+
+// ── VRoid Hub OAuth2 callback ─────────────────────────────────────────────────
+
+/// GET /vroid/callback?code=...
+/// Exchanges VRoid Hub authorization code for access token (server-side,
+/// using VROID_CLIENT_SECRET env var) then redirects to skeleton3d.html
+/// with the token in the query string.
+async fn vroid_callback(Query(params): Query<std::collections::HashMap<String, String>>) -> impl IntoResponse {
+    let code = match params.get("code") {
+        Some(c) => c.clone(),
+        None => {
+            return (axum::http::StatusCode::BAD_REQUEST, "Missing ?code parameter").into_response();
+        }
+    };
+
+    let client_secret = std::env::var("VROID_CLIENT_SECRET").unwrap_or_default();
+    if client_secret.is_empty() {
+        return (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            "VROID_CLIENT_SECRET env var not set",
+        ).into_response();
+    }
+
+    let client_id = "WwL9s-Ni_emkmEWYTNGvvIvWBJJ62x0-yJNAcH_JqbE";
+    // redirect_uri must match the one used in the authorization request
+    // The frontend sends window.location.protocol + "//" + window.location.host + "/vroid/callback"
+    // which resolves to http://localhost:3000/vroid/callback
+    let redirect_uri = params
+        .get("redirect_uri")
+        .cloned()
+        .unwrap_or_else(|| "http://localhost:3000/vroid/callback".to_string());
+
+    let http_client = match reqwest::Client::builder().build() {
+        Ok(c) => c,
+        Err(e) => {
+            error!("Failed to build reqwest client: {e}");
+            return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "HTTP client error").into_response();
+        }
+    };
+
+    let res = http_client
+        .post("https://hub.vroid.com/oauth/token")
+        .form(&[
+            ("grant_type",    "authorization_code"),
+            ("code",          code.as_str()),
+            ("redirect_uri",  redirect_uri.as_str()),
+            ("client_id",     client_id),
+            ("client_secret", client_secret.as_str()),
+        ])
+        .send()
+        .await;
+
+    match res {
+        Ok(r) if r.status().is_success() => {
+            match r.json::<serde_json::Value>().await {
+                Ok(body) => {
+                    if let Some(token) = body.get("access_token").and_then(|t| t.as_str()) {
+                        let dest = format!("/ui/skeleton3d.html?vroid_token={token}");
+                        Redirect::to(&dest).into_response()
+                    } else {
+                        (axum::http::StatusCode::BAD_GATEWAY, "No access_token in response").into_response()
+                    }
+                }
+                Err(e) => {
+                    error!("VRoid token parse error: {e}");
+                    (axum::http::StatusCode::BAD_GATEWAY, "Token parse error").into_response()
+                }
+            }
+        }
+        Ok(r) => {
+            let status = r.status().as_u16();
+            let body = r.text().await.unwrap_or_default();
+            error!("VRoid token exchange failed {status}: {body}");
+            (axum::http::StatusCode::BAD_GATEWAY, format!("VRoid Hub error {status}")).into_response()
+        }
+        Err(e) => {
+            error!("VRoid token request error: {e}");
+            (axum::http::StatusCode::BAD_GATEWAY, "Network error").into_response()
         }
     }
 }
@@ -3839,6 +3925,8 @@ async fn main() {
         .route("/api/v1/sona/enable",  post(sona_enable))
         .route("/api/v1/sona/disable", post(sona_disable))
         .route("/api/v1/sona/status",  get(sona_live_status))
+        // VRoid Hub OAuth2 callback (server-side token exchange)
+        .route("/vroid/callback", get(vroid_callback))
         // Static UI files
         .nest_service("/ui", ServeDir::new(&ui_path))
         .layer(SetResponseHeaderLayer::overriding(

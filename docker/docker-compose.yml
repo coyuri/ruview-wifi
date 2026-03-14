@@ -18,6 +18,8 @@ services:
       #          wifi           — use host Wi-Fi RSSI/scan data (Windows netsh)
       #          simulated      — generate synthetic CSI data (no hardware required)
       - CSI_SOURCE=${CSI_SOURCE:-auto}
+      # VRoid Hub OAuth2 client secret (set in shell or .env before docker compose up)
+      - VROID_CLIENT_SECRET=${VROID_CLIENT_SECRET:-}
     # command is passed as arguments to ENTRYPOINT (/bin/sh -c), so $CSI_SOURCE is expanded by the shell.
     command: ["/app/sensing-server --source ${CSI_SOURCE:-auto} --tick-ms 100 --ui-path /app/ui --http-port 3000 --ws-port 3001"]
 
