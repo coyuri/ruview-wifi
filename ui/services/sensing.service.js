@@ -10,9 +10,12 @@
  */
 
 // Derive WebSocket URL from the page origin so it works on any port.
-// The /ws/sensing endpoint is available on the same HTTP port (3000).
+// On localhost, the sensing WS runs on port 8765 (separate from HTTP port 8080).
 const _wsProto = (typeof window !== 'undefined' && window.location.protocol === 'https:') ? 'wss:' : 'ws:';
-const _wsHost  = (typeof window !== 'undefined' && window.location.host) ? window.location.host : 'localhost:3000';
+const _isLocal = typeof window !== 'undefined' &&
+  (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
+const _wsHost  = _isLocal ? 'localhost:8765' :
+  ((typeof window !== 'undefined' && window.location.host) ? window.location.host : 'localhost:8765');
 const SENSING_WS_URL = `${_wsProto}//${_wsHost}/ws/sensing`;
 const RECONNECT_DELAYS = [1000, 2000, 4000, 8000, 16000];
 const MAX_RECONNECT_ATTEMPTS = 20;

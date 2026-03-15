@@ -949,7 +949,9 @@ fn smooth_and_classify(state: &mut AppStateInner, raw: &mut ClassificationInfo, 
 
     // 6. Write the smoothed result back into the classification.
     raw.motion_level = state.current_motion_level.clone();
-    raw.presence = sm > 0.03;
+    // Use raw_motion as fallback: baseline subtraction can erase still-person signal
+    // when the person was already present during the warmup window.
+    raw.presence = sm > 0.03 || raw_motion > 0.05;
     raw.confidence = (0.4 + sm * 0.6).clamp(0.0, 1.0);
 }
 
@@ -983,6 +985,15 @@ fn adaptive_override(state: &AppStateInner, features: &FeatureInfo, classificati
         }
         // Blend model confidence with existing smoothed confidence.
         classification.confidence = (conf * 0.7 + classification.confidence * 0.3).clamp(0.0, 1.0);
+    }
+    // ADR-039: If ESP32 edge vitals report presence, use as fusion signal.
+    if let Some(ref ev) = state.edge_vitals {
+        if ev.presence || ev.presence_score > 0.3 {
+            classification.presence = true;
+            if classification.motion_level == "absent" {
+                classification.motion_level = "present_still".to_string();
+            }
+        }
     }
 }
 

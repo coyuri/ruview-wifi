@@ -326,9 +326,9 @@ class WsClient {
 
   _connect() {
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    // On localhost: sensing-server WebSocket runs on port 8765 (separate from HTTP)
+    // On localhost: sensing WS runs on port 8765 (separate from HTTP port 8080).
     const host = (location.hostname === 'localhost' || location.hostname === '127.0.0.1')
-      ? `${location.hostname}:8765`
+      ? 'localhost:8765'
       : location.host;
     const url = `${proto}://${host}/ws/sensing`;
 
@@ -552,7 +552,8 @@ class Skeleton3DApp {
     let personsKps;
 
     if (this._liveMode && this._serverPersons.length > 0) {
-      // ライブモード: サーバーから来た persons を使用
+      // ライブモード: サーバーから来た CSI 派生キーポイントをそのまま使用
+      // VTuber連動など実データが必要なアプリ向けに生キーポイントを渡す
       personsKps = this._serverPersons.map((p, i) => ({
         id:     p.id ?? i,
         kps17:  this._serverPersonToKps17(p),
@@ -651,7 +652,8 @@ class Skeleton3DApp {
   // ── WebSocket データ処理 ─────────────────────────────────────────
 
   _handleData(data) {
-    if (data.msg_type !== 'sensing_update') return;
+    // Server serializes msg_type as "type" via #[serde(rename = "type")]
+    if (data.type !== 'sensing_update' && data.msg_type !== 'sensing_update') return;
 
     // ノードのアクティブ状態を更新（TTL 10秒で蓄積、瞬間的なドロップを防ぐ）
     if (data.nodes) {
@@ -668,19 +670,23 @@ class Skeleton3DApp {
       document.getElementById('node-active').textContent = this._nodeActive.size;
     }
 
+    // Always extract motion_level for animation driving
+    if (data.classification?.motion_level) {
+      this._serverMotionLevel = data.classification.motion_level;
+    }
+
     // persons があればライブモードへ
-    if (data.persons && data.persons.length > 0) {
-      this._serverPersons = data.persons;
+    // SensingUpdate: data.persons (top-level)
+    // pose_data型: data.payload.pose.persons (nested)
+    const persons = data.persons ?? data.payload?.pose?.persons;
+    if (persons && persons.length > 0) {
+      this._serverPersons = persons;
       this._liveMode      = true;
       this._lastUpdate    = performance.now();
       this._updateBadge('live');
-    } else if (data.source === 'esp32') {
+    } else if (data.source === 'esp32' || data.type === 'pose_data') {
       // ESP32からのデータだがポーズなし → サーバー接続バッジ
       this._updateBadge('srv');
-      // motion_level → シミュレーションポーズに反映
-      if (data.classification?.motion_level) {
-        this._serverMotionLevel = data.classification.motion_level;
-      }
     }
 
     // バイタルサイン更新

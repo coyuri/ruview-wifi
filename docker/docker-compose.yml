@@ -21,6 +21,8 @@ services:
       - SENSING_BIND_ADDR=0.0.0.0
       # VRoid Hub OAuth2 client secret (set in shell or .env before docker compose up)
       - VROID_CLIENT_SECRET=${VROID_CLIENT_SECRET:-}
+    volumes:
+      - ../ui:/app/ui:ro   # serve live local JS without rebuild
     # command is passed as arguments to ENTRYPOINT (/bin/sh -c), so $CSI_SOURCE is expanded by the shell.
     command: ["/app/sensing-server --source $${CSI_SOURCE:-esp32} --tick-ms 100 --ui-path /app/ui --http-port 3000 --ws-port 3001"]
 

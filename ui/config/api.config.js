@@ -4,7 +4,7 @@
 // served from Docker (:3000), local dev (:8080), or any other port.
 const _origin = (typeof window !== 'undefined' && window.location && window.location.origin)
   ? window.location.origin
-  : 'http://localhost:3000';
+  : 'http://localhost:8080';
 
 export const API_CONFIG = {
   BASE_URL: _origin,
