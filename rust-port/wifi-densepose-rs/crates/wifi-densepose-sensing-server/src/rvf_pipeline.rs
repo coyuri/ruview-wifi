@@ -647,6 +647,11 @@ impl ProgressiveLoader {
         Ok(LayerCData { all_weights, overlay, sona_profiles })
     }
 
+    /// Return the RVF container metadata (SEG_META), if present.
+    pub fn metadata(&self) -> Option<serde_json::Value> {
+        self.reader.metadata()
+    }
+
     /// Current loading progress (0.0 to 1.0).
     pub fn loading_progress(&self) -> f32 {
         let mut p = 0.0f32;

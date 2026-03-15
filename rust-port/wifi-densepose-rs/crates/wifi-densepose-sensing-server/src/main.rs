@@ -9,10 +9,12 @@
 //! Replaces both ws_server.py and the Python HTTP server.
 
 mod adaptive_classifier;
+mod recording;
 mod rvf_container;
 mod rvf_pipeline;
 mod sona;
 mod sona_pipeline;
+mod training_api;
 mod vital_signs;
 
 use sona_pipeline::{SonaSample, SonaLiveState, SonaPipelineConfig, sona_adaptation_task};
@@ -357,11 +359,25 @@ struct AppStateInner {
     recording_current_id: Option<String>,
     /// Shutdown signal for the recording writer task.
     recording_stop_tx: Option<tokio::sync::watch::Sender<bool>>,
+    /// Unified recording state for the recording module.
+    recording_state: recording::RecordingState,
     // ── Training fields ─────────────────────────────────────────────────────
     /// Training status: "idle", "running", "completed", "failed".
     training_status: String,
     /// Training configuration, if any.
     training_config: Option<serde_json::Value>,
+    /// Full training state managed by training_api (includes task handle, status, metrics).
+    training_state: training_api::TrainingState,
+    /// Broadcast channel for streaming training progress to WebSocket clients.
+    training_progress_tx: broadcast::Sender<String>,
+    // ── Trained model inference ─────────────────────────────────────────────
+    /// Cached weights from the trained model (weights + bias concatenated as f32).
+    /// Layout: [W: N_TARGETS * n_features][bias: N_TARGETS].
+    model_weights_cache: Option<Vec<f32>>,
+    /// Feature normalization stats saved with the trained model.
+    model_feature_stats: Option<training_api::FeatureStats>,
+    /// Previous frame's subcarrier amplitudes for temporal gradient features.
+    prev_subcarriers: Option<Vec<f64>>,
     // ── Adaptive classifier (environment-tuned) ──────────────────────────
     /// Trained adaptive model (loaded from data/adaptive_model.json or trained at runtime).
     adaptive_model: Option<adaptive_classifier::AdaptiveModel>,
@@ -1315,6 +1331,26 @@ async fn windows_wifi_task(state: SharedState, tick_ms: u64) {
             estimated_persons: if est_persons > 0 { Some(est_persons) } else { None },
         };
 
+        // ── Model inference: if trained weights are loaded, produce real keypoints ──
+        if s.model_loaded {
+            if let (Some(weights), Some(fstats)) =
+                (s.model_weights_cache.clone(), s.model_feature_stats.clone())
+            {
+                let prev = s.prev_subcarriers.clone();
+                let kps = training_api::infer_pose_from_model(
+                    &weights,
+                    &fstats,
+                    &frame.amplitudes,
+                    &s.frame_history,
+                    prev.as_deref(),
+                    sample_rate_hz,
+                );
+                update.pose_keypoints = Some(kps);
+                update.model_status = Some(serde_json::json!("model_inference"));
+            }
+        }
+        s.prev_subcarriers = Some(frame.amplitudes.clone());
+
         // Populate persons from the sensing update.
         let persons = derive_pose_from_sensing(&update);
         if !persons.is_empty() {
@@ -1444,6 +1480,26 @@ async fn windows_wifi_fallback_tick(state: &SharedState, seq: u32) {
         persons: None,
         estimated_persons: if est_persons > 0 { Some(est_persons) } else { None },
     };
+
+    // ── Model inference: produce real keypoints when trained model is loaded ──
+    if s.model_loaded {
+        if let (Some(weights), Some(fstats)) =
+            (s.model_weights_cache.clone(), s.model_feature_stats.clone())
+        {
+            let prev = s.prev_subcarriers.clone();
+            let kps = training_api::infer_pose_from_model(
+                &weights,
+                &fstats,
+                &frame.amplitudes,
+                &s.frame_history,
+                prev.as_deref(),
+                sample_rate_hz,
+            );
+            update.pose_keypoints = Some(kps);
+            update.model_status = Some(serde_json::json!("model_inference"));
+        }
+    }
+    s.prev_subcarriers = Some(frame.amplitudes.clone());
 
     let persons = derive_pose_from_sensing(&update);
     if !persons.is_empty() {
@@ -3788,9 +3844,16 @@ async fn main() {
         recording_start_time: None,
         recording_current_id: None,
         recording_stop_tx: None,
+        recording_state: recording::RecordingState::default(),
         // Training
         training_status: "idle".to_string(),
         training_config: None,
+        training_state: training_api::TrainingState::default(),
+        training_progress_tx: broadcast::channel::<String>(256).0,
+        // Trained model inference
+        model_weights_cache: None,
+        model_feature_stats: None,
+        prev_subcarriers: None,
         adaptive_model: adaptive_classifier::AdaptiveModel::load(&adaptive_classifier::model_path()).ok().map(|m| {
             info!("Loaded adaptive classifier: {} frames, {:.1}% accuracy",
                   m.trained_frames, m.training_accuracy * 100.0);
@@ -3801,6 +3864,35 @@ async fn main() {
         sona_tx: None,
         sona_config: SonaPipelineConfig::default(),
     }));
+
+    // If a model was loaded via --model / --load-rvf, extract weights + feature_stats for inference.
+    {
+        let mut s = state.write().await;
+        if s.model_loaded {
+            if let Some(ref mut loader) = s.progressive_loader {
+                match loader.load_layer_c() {
+                    Ok(layer_c) => {
+                        // Parse feature_stats from RVF metadata if available.
+                        let fstats: Option<training_api::FeatureStats> = loader.metadata()
+                            .and_then(|meta| {
+                                meta.get("feature_stats")
+                                    .and_then(|v| serde_json::from_value(v.clone()).ok())
+                            });
+                        if !layer_c.all_weights.is_empty() {
+                            info!(
+                                "Model weights loaded: {} params, feature_stats={}",
+                                layer_c.all_weights.len(),
+                                fstats.is_some()
+                            );
+                            s.model_weights_cache = Some(layer_c.all_weights);
+                            s.model_feature_stats = fstats;
+                        }
+                    }
+                    Err(e) => warn!("Could not load model Layer C: {e}"),
+                }
+            }
+        }
+    }
 
     // Start background tasks based on source
     match source {
@@ -3875,6 +3967,7 @@ async fn main() {
     });
 
     // HTTP server (serves UI + full DensePose-compatible REST API)
+    // /ws/sensing is included in the HTTP router (line ~4007) for same-port WS upgrade.
     let ui_path = args.ui_path.clone();
     let http_app = Router::new()
         .route("/", get(info_page))
@@ -3919,15 +4012,8 @@ async fn main() {
         .route("/api/v1/models/{id}", delete(delete_model))
         .route("/api/v1/models/lora/profiles", get(list_lora_profiles))
         .route("/api/v1/models/lora/activate", post(activate_lora_profile))
-        // Recording endpoints
-        .route("/api/v1/recording/list", get(list_recordings))
-        .route("/api/v1/recording/start", post(start_recording))
-        .route("/api/v1/recording/stop", post(stop_recording))
-        .route("/api/v1/recording/{id}", delete(delete_recording))
-        // Training endpoints
-        .route("/api/v1/train/status", get(train_status))
-        .route("/api/v1/train/start", post(train_start))
-        .route("/api/v1/train/stop", post(train_stop))
+        // Recording endpoints — provided by recording::routes() below
+        // Training endpoints — provided by training_api::routes() below
         // Adaptive classifier endpoints
         .route("/api/v1/adaptive/train", post(adaptive_train))
         .route("/api/v1/adaptive/status", get(adaptive_status))
@@ -3938,6 +4024,10 @@ async fn main() {
         .route("/api/v1/sona/status",  get(sona_live_status))
         // VRoid Hub OAuth2 callback (server-side token exchange)
         .route("/vroid/callback", get(vroid_callback))
+        // Full training pipeline (real CSI→pose model training + inference)
+        .merge(training_api::routes())
+        // Full recording pipeline (CSI frame recording to .csi.jsonl)
+        .merge(recording::routes())
         // Static UI files
         .nest_service("/ui", ServeDir::new(&ui_path))
         .layer(SetResponseHeaderLayer::overriding(

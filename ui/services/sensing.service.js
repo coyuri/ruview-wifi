@@ -9,13 +9,12 @@
  * emit simulated frames so the UI can clearly distinguish live vs. fallback data.
  */
 
-// Derive WebSocket URL from the page origin so it works on any port.
-// On localhost, the sensing WS runs on port 8765 (separate from HTTP port 8080).
+// Derive WebSocket URL from the page origin.
+// HTTP server and WS both live on the same port (/ws/sensing upgrade on http_port).
 const _wsProto = (typeof window !== 'undefined' && window.location.protocol === 'https:') ? 'wss:' : 'ws:';
-const _isLocal = typeof window !== 'undefined' &&
-  (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
-const _wsHost  = _isLocal ? 'localhost:8765' :
-  ((typeof window !== 'undefined' && window.location.host) ? window.location.host : 'localhost:8765');
+const _wsHost  = (typeof window !== 'undefined' && window.location.host)
+  ? window.location.host
+  : 'localhost:8080';
 const SENSING_WS_URL = `${_wsProto}//${_wsHost}/ws/sensing`;
 const RECONNECT_DELAYS = [1000, 2000, 4000, 8000, 16000];
 const MAX_RECONNECT_ATTEMPTS = 20;
